@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>loadshift</title>
+<meta name="description" content="Plan a flexible industrial load on German day-ahead prices, with a plain explanation and refusals when the data cannot support a plan.">
+<style>
+:root{--bg:#0d1117;--panel:#151b23;--line:#262f3a;--text:#e6edf3;--muted:#8b97a5;--accent:#f5b83d;--good:#3fb97f;--bad:#e5655a;--base:#6b7a8c}
+@media (prefers-color-scheme: light){:root{--bg:#f7f8fa;--panel:#fff;--line:#e3e7ec;--text:#18202a;--muted:#5d6977;--accent:#c98a00;--good:#1f8a57;--bad:#c4473d;--base:#9aa6b4}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:28px 16px 48px}
+h1{font-size:22px;margin:0;letter-spacing:-.01em}
+h1 span{color:var(--accent)}
+.sub{color:var(--muted);margin:4px 0 22px}
+.grid{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
+@media (min-width:820px){.grid{grid-template-columns:300px minmax(0,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+label{display:block;font-size:12px;color:var(--muted);margin:12px 0 4px;text-transform:uppercase;letter-spacing:.04em}
+label:first-child{margin-top:0}
+input,select{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.presets button{background:transparent;color:var(--text);border:1px solid var(--line);border-radius:999px;padding:4px 10px;font:inherit;font-size:13px;cursor:pointer}
+.presets button:hover{border-color:var(--accent)}
+.toggle{display:flex;gap:8px;align-items:center;margin-top:12px;font-size:14px}
+.toggle input{width:auto}
+.kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}
+.kpi{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px}
+.kpi b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+.kpi small{color:var(--muted);font-size:12px}
+.save b{color:var(--good)}
+svg{width:100%;height:auto;display:block}
+.why{margin:12px 0 0;padding-left:18px}
+.why li{margin:4px 0}
+.refused{border-color:var(--bad)}
+.refused .why{color:var(--bad)}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:6px;flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+footer{color:var(--muted);font-size:12px;margin-top:20px}
+footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+  <h1>load<span>shift</span></h1>
+  <p class="sub">When should a flexible industrial load run on tomorrow's German day-ahead prices? The plan explains itself, and it refuses when the data cannot support one.</p>
+  <div class="grid">
+    <form class="card" id="f" onsubmit="return false">
+      <div class="presets">
+        <button type="button" data-p="1.5,6,0">Cold store, can pause</button>
+        <button type="button" data-p="4,3,1">Batch furnace, one block</button>
+        <button type="button" data-p="10,8,0">Electrolyser</button>
+      </div>
+      <div class="row">
+        <div><label for="mw">Power (MW)</label><input id="mw" type="number" min="0.1" step="0.1" value="1.5"></div>
+        <div><label for="h">Run time (h)</label><input id="h" type="number" min="0.25" step="0.25" value="6"></div>
+      </div>
+      <label for="from">Earliest start</label><select id="from"></select>
+      <label for="to">Must be done by</label><select id="to"></select>
+      <div class="toggle"><input id="c" type="checkbox"><label for="c" style="margin:0;text-transform:none;letter-spacing:0;font-size:14px;color:var(--text)">Must run in one block</label></div>
+    </form>
+    <section class="card" id="out">
+      <div class="kpis">
+        <div class="kpi"><small>Planned cost</small><b id="k1">-</b></div>
+        <div class="kpi"><small>Start right away</small><b id="k2">-</b></div>
+        <div class="kpi save"><small>Saved</small><b id="k3">-</b></div>
+      </div>
+      <svg id="chart" viewBox="0 0 640 230" role="img" aria-label="Day-ahead prices with the planned slots highlighted"></svg>
+      <div class="legend"><span><i style="background:var(--accent)"></i>planned slots</span><span><i style="background:var(--base)"></i>start right away</span><span><i style="background:var(--line)"></i>other prices</span></div>
+      <ul class="why" id="why"></ul>
+    </section>
+  </div>
+  <footer>Prices: DE-LU day-ahead, 15-minute slots, <span id="src"></span>. Day-ahead energy price only: grid fees, taxes and process limits are left out. Built in about 30 minutes with Claude Code. <a href="https://github.com/vishalbanwari26/loadshift">Source</a>.</footer>
+</main>
+<script type="module">
+import { plan, explain, fmt } from './plan.js';
+const $ = (id) => document.getElementById(id);
+const data = await (await fetch('prices.json')).json();
+const prices = data.prices;
+$('src').textContent = `${data.license}, fetched ${new Date(data.fetchedAt).toLocaleString('en-GB', { timeZone: 'Europe/Berlin' })}`;
+
+const first = prices[0].t, end = prices.at(-1).t + 900;
+const nowSlot = Math.ceil(Date.now() / 900e3) * 900;
+const hours = [];
+for (let t = first; t <= end; t += 3600) hours.push(t);
+const opts = (sel, pick) => { sel.innerHTML = hours.map((t) => `<option value="${t}"${t === pick ? ' selected' : ''}>${fmt(t)}</option>`).join(''); };
+const startPick = hours.find((t) => t >= nowSlot) ?? hours[0];
+opts($('from'), startPick);
+opts($('to'), hours.at(-1));
+
+const eur = (x) => `€${Math.round(x).toLocaleString('en-GB')}`;
+function render() {
+  const mw = +$('mw').value, h = +$('h').value, contiguous = $('c').checked;
+  const from = +$('from').value, to = +$('to').value;
+  const r = plan(prices, { mw, hours: h, from, to, contiguous });
+  $('out').classList.toggle('refused', !r.ok);
+  $('k1').textContent = r.ok ? eur(r.cost) : '-';
+  $('k2').textContent = r.ok ? eur(r.baseCost) : '-';
+  $('k3').textContent = r.ok ? eur(r.saving) : '-';
+  $('why').innerHTML = explain(r, mw).map((l) => `<li>${l}</li>`).join('');
+  draw(r, from, to);
+}
+
+function draw(r, from, to) {
+  const W = 640, H = 230, P = { l: 40, r: 8, t: 22, b: 26 };
+  const lo = Math.min(0, ...prices.map((p) => p.eur)), hi = Math.max(...prices.map((p) => p.eur));
+  const x = (t) => P.l + ((t - first) / (end - first)) * (W - P.l - P.r);
+  const y = (v) => P.t + (1 - (v - lo) / (hi - lo || 1)) * (H - P.t - P.b);
+  const bw = Math.max(1, x(first + 900) - x(first) - 0.6);
+  const chosen = new Set(r.ok ? r.chosen.map((p) => p.t) : []);
+  const base = new Set(r.ok ? r.baseline.map((p) => p.t) : []);
+  let s = '';
+  for (const v of [lo, (lo + hi) / 2, hi]) s += `<line x1="${P.l}" x2="${W - P.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${P.l - 6}" y="${y(v) + 4}" font-size="10" text-anchor="end" fill="var(--muted)">${v.toFixed(0)}</text>`;
+  s += `<rect x="${x(from)}" y="${P.t}" width="${Math.max(0, x(Math.min(to, end)) - x(from))}" height="${H - P.t - P.b}" fill="var(--accent)" opacity=".06"/>`;
+  for (const p of prices) {
+    const fill = chosen.has(p.t) ? 'var(--accent)' : base.has(p.t) ? 'var(--base)' : 'var(--line)';
+    const y0 = y(Math.max(0, p.eur)), y1 = y(Math.min(0, p.eur));
+    s += `<rect x="${x(p.t)}" y="${y0}" width="${bw}" height="${Math.max(1, y1 - y0)}" fill="${fill}"><title>${fmt(p.t)}: ${p.eur} EUR/MWh</title></rect>`;
+  }
+  for (let t = first; t < end; t += 6 * 3600) s += `<text x="${x(t)}" y="${H - 8}" font-size="10" fill="var(--muted)">${fmt(t)}</text>`;
+  s += `<text x="${P.l}" y="11" font-size="10" fill="var(--muted)">€/MWh, 15-minute slots</text>`;
+  $('chart').innerHTML = s;
+}
+
+for (const el of ['mw', 'h', 'from', 'to', 'c']) $(el).addEventListener('input', render);
+document.querySelectorAll('[data-p]').forEach((b) => b.addEventListener('click', () => {
+  const [mw, h, c] = b.dataset.p.split(','); $('mw').value = mw; $('h').value = h; $('c').checked = c === '1'; render();
+}));
+render();
+</script>
+</body>
+</html>

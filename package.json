@@ -1,0 +1,9 @@
+{
+  "name": "loadshift",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "prices": "node scripts/fetch-prices.mjs"
+  }
+}
